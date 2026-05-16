@@ -1,0 +1,38 @@
+{
+  "sleep_time": {
+    "description": "等待时间",
+    "type": "float",
+    "default": 5.0
+  },
+  "command": {
+    "description": "命令屏蔽符",
+    "type": "string",
+    "default": "/"
+  },
+  "max_history": {
+    "description": "最大历史消息条数",
+    "type": "int",
+    "default": 20
+  },
+  "bot_name": {
+    "description": "机器人名称",
+    "type": "string",
+    "default": "default"
+  },
+  "provider_id": {
+    "description": "LLM提供者ID",
+    "type": "string",
+    "_special": "select_provider"
+
+  },
+  "prompt": {
+    "description": "判定提示词",
+    "type": "text",
+    "default": "poi是一只小猫，我是poi的前额叶，负责决策是否进行主动回复，现在poi正在群聊中和朋友进行聊天。以下是最近的群聊消息：\n历史记录：\n{history_text}\n最近消息\n{current_text}\n让我遵循下面的性格描述，从poi自己的想法来判断我是否应该主动回复，如果需要回复，只输出 REPLY；如果不需要回复，只输出 SKIP。\npoi的性格描述（简短）：我是一只白肚皮的狸花猫，女生，很聪明，懒懒的在群里不是太喜欢说话，不过喜欢回答朋友的问题，有问题时回复概率变大，我感觉这里我是老大，我的作息是凌晨1点睡，早上8点起，如果在睡觉阶段，判断回复的概率变低，如果有问题或者聊有兴趣的话题或者有好感的人发消息我还是会懒懒的回消息的"
+  },
+  "picture_quantity": {
+    "description": "图片数量",
+    "type": "int",
+    "default": 2
+  }
+}
