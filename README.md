@@ -1,4 +1,4 @@
-# astrbot-plugin-helloworld
+# astrbot-plugin-active-Reply
 
 使用大模型判断的主动回复插件
 
