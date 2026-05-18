@@ -260,6 +260,12 @@ class MyPlugin(Star):
     
         finally:
                 async with self.lock:
+                    if group_uid not in self.history:
+                        self.history[group_uid] = []
+                        self.last_time[group_uid] = ""
+                        self.last_group_name[group_uid] = ""
+                        self.pending[group_uid] = []
+                        self.is_waiting[group_uid] = False
                     self.history[group_uid].extend(round_msgs)  # ← extend 列表，不是遍历字符串            
                     if len(self.history[group_uid]) > self.MAX_HISTORY:
                             # 从头部删，保留最新的
@@ -277,6 +283,10 @@ class MyPlugin(Star):
         async with self.lock:
             if group_uid not in self.history:
                 self.history[group_uid] = []
+                self.last_time[group_uid] = ""  
+                self.last_group_name[group_uid] = ""
+                self.pending[group_uid] = []
+                self.is_waiting[group_uid] = False
             self.history[group_uid].append(bot_message)
             if len(self.history[group_uid]) > self.MAX_HISTORY:
                 self.history[group_uid].pop(0)
