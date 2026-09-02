@@ -333,33 +333,24 @@ class MyPlugin(Star):
 当前消息：
 {current_clean}"""
 
+        # 低侵入：不再整体替换 req.prompt / req.contexts。
+        # 流水账只用于图片场景：有图时把群聊流水账合并进 prompt，并走 AstrBot
+        # 原生的 image_urls 多模态通道（由 assemble_context 拼成统一消息）；
+        # 无图时只清掉占位符，不额外注入流水账，保留其他插件已注入的内容。
+        base_prompt = (getattr(req, "prompt", None) or "").strip()
+        base_prompt = base_prompt.replace("placeholder", "").strip()
+
         if images:
-            logger.info(f"注入 {len(images)} 张图片，使用标准多模态格式")
-            
-            # 构造 OpenAI 标准多模态 content 数组
-            content = [{"type": "text", "text": chat_log}]
-            for b64 in images:
-                content.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{b64}",
-                        "detail": "auto"  # auto/low/high
-                    }
-                })
-            
-            # 只发一条 user 消息，群聊格式完全不会变
-            req.contexts = [
-                {
-                    "role": "user",
-                    "content": content
-                }
-            ]
-            # 必须清空 prompt，否则内容会重复
-            req.prompt = ""
+            req.prompt = f"{base_prompt}\n{chat_log}".strip() if base_prompt else chat_log
+            logger.info(f"注入 {len(images)} 张图片，使用 AstrBot 原生 image_urls 通道")
+            extra = [f"data:image/jpeg;base64,{b64}" for b64 in images]
+            existing = list(getattr(req, "image_urls", None) or [])
+            req.image_urls = existing + extra
         else:
-            # 没图时走纯文本
-            req.contexts = []
-            req.prompt = chat_log
+            # 最小占位，保证 prompt 非空（self_learning 等插件依赖），不算流水账
+            req.prompt = base_prompt or "请基于当前上下文回复。"
+
+        # 不再整体替换 req.contexts，保留记忆、self_learning、token_controller 等的注入
         
     def _compress_history_images(self, group_uid: str, max_keep: int = None):
         """
