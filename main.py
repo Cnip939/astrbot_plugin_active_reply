@@ -138,8 +138,15 @@ class MyPlugin(Star):
                             logger.warning(f"图片下载返回非200: {url[:60]}... status={resp.status}")
             except Exception as e:
                 logger.warning(f"图片下载失败 {url[:60]}...: {e}")
-        # 途径3：如果以上都失败，尝试通过 AstrBot 内部方式获取（扩展点）
-        # 参考插件传了 context，这里预留
+        # 途径3：交给 AstrBot 内置 MediaResolver，统一处理本地路径、
+        # base64://、data URI 和网络 URL 等格式
+        try:
+            b64 = await img_comp.convert_to_base64()
+            if b64:
+                logger.info(f"AstrBot 内置图片解析成功: base64 len={len(b64)}")
+                return b64
+        except Exception as e:
+            logger.warning(f"AstrBot 内置图片解析失败: {e}")
         logger.warning("无法获取图片 base64，所有途径均失败")
         return None
         
