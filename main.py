@@ -420,7 +420,7 @@ class MyPlugin(Star):
                     self._compress_history_images(group_uid, max_keep=self.PICTURE)
     
     @filter.after_message_sent()
-    async def process_bot_message(self,event):
+    async def process_bot_message(self, event: AstrMessageEvent, *args, **kwargs):
         group_uid = event.session_id 
         result = event.get_result()
         text = result.chain
@@ -503,7 +503,7 @@ class MyPlugin(Star):
         logger.info(f"仅图片注入模式：注入 {len(current_images)} 张图片和群聊流水账")
         
     @filter.on_llm_request()
-    async def save_in_history(self, event: AstrMessageEvent, req: ProviderRequest):
+    async def save_in_history(self, event: AstrMessageEvent, req: ProviderRequest, *args, **kwargs):
         if not self.ACTIVE_REPLY_ENABLED:
             await self._inject_image_only(event, req)
             return
