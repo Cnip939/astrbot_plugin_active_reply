@@ -4,6 +4,11 @@
     "type": "float",
     "default": 5.0
   },
+  "active_reply_enabled": {
+    "description": "是否启用主动回复判定；关闭后插件只保留图片注入能力",
+    "type": "bool",
+    "default": true
+  },
   "command": {
     "description": "命令屏蔽符",
     "type": "string",
