@@ -278,7 +278,7 @@ class MyPlugin(Star):
     
     #收集当前消息，下文消息并合并到维护的历史中
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
-    async def process_message(self,event):
+    async def process_message(self, event: AstrMessageEvent, *args, **kwargs):
         if event.get_sender_id() == event.get_self_id():   # 过滤自己
             return
         
