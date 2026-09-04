@@ -420,7 +420,7 @@ class MyPlugin(Star):
                     self._compress_history_images(group_uid, max_keep=self.PICTURE)
     
     @filter.after_message_sent()
-    async def process_bot_message(self,event):
+    async def process_bot_message(self, event: AstrMessageEvent, *args, **kwargs):
         group_uid = event.session_id 
         result = event.get_result()
         text = result.chain
@@ -509,7 +509,7 @@ class MyPlugin(Star):
     # gitee_aiimg 是 -20）：这些插件的 on_llm_request 会覆盖 req.prompt /
     # req.image_urls，默认优先级 0 会先执行、注入的图片随即被覆盖掉，等于白注入。
     @filter.on_llm_request(priority=-30)
-    async def save_in_history(self, event: AstrMessageEvent, req: ProviderRequest):
+    async def save_in_history(self, event: AstrMessageEvent, req: ProviderRequest, *args, **kwargs):
         if not self.ACTIVE_REPLY_ENABLED:
             await self._inject_image_only(event, req)
             return
