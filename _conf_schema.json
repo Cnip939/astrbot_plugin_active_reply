@@ -5,9 +5,9 @@
     "default": 5.0
   },
   "active_reply_enabled": {
-    "description": "是否启用主动回复判定；关闭后插件只保留图片注入能力",
+    "description": "是否启用主动回复判定；关闭后插件只保留图片注入能力。默认关闭：主动回复判定与 group_chat_plus 的读空气/决策AI 重复，建议只保留一种",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "command": {
     "description": "命令屏蔽符",
