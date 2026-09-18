@@ -5,7 +5,7 @@
     "default": 5.0
   },
   "active_reply_enabled": {
-    "description": "是否启用主动回复判定；关闭后插件只保留图片注入能力",
+    "description": "主动回复模式开关。开启=由本插件判定 REPLY/SKIP 并自行接管上下文（自己拼群聊流水账+注入图片），可单独使用；关闭=只做图片注入，历史/记忆/工具由其他负责上下文拼装的插件提供（例如 group_chat_plus）",
     "type": "bool",
     "default": true
   },
