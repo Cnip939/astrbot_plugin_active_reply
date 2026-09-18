@@ -502,7 +502,10 @@ class MyPlugin(Star):
         req.image_urls = existing + extra
         logger.info(f"仅图片注入模式：注入 {len(current_images)} 张图片和群聊流水账")
         
-    @filter.on_llm_request()
+    # 优先级必须低于 group_chat_plus(-1) 与 gitee_aiimg(-20)：
+    # 这两个插件的 on_llm_request 会覆盖 req.prompt / req.image_urls，
+    # 默认优先级 0 会先执行、注入的图片随即被覆盖掉，等于白注入。
+    @filter.on_llm_request(priority=-30)
     async def save_in_history(self, event: AstrMessageEvent, req: ProviderRequest, *args, **kwargs):
         if not self.ACTIVE_REPLY_ENABLED:
             await self._inject_image_only(event, req)
