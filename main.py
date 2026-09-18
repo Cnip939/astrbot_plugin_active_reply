@@ -461,17 +461,12 @@ class MyPlugin(Star):
             return
 
         group_uid = event.session_id
-        current_text = event.get_extra("_ar_current_text", "")
         current_images = event.get_extra("_ar_current_images", None)
-        full_current = event.get_extra("_ar_current_full", "")
 
         if not current_images:
             # 兜底：钩子先于消息处理器执行时，直接从事件里重新解析
             try:
-                current_text, current_images = await self.message_and_images(event)
-                full_current = f"{event.get_sender_name()}[{event.get_sender_id()}]:{current_text}"
-                for b64 in current_images:
-                    full_current += f"\n[IMG_B64:{b64}]"
+                _, current_images = await self.message_and_images(event)
             except Exception as e:
                 logger.warning(f"仅图片注入模式解析当前消息失败: {e}")
                 current_images = []
@@ -499,26 +494,16 @@ class MyPlugin(Star):
                 f"仅图片注入模式：当前消息无图，回退取历史上最近 "
                 f"{len(current_images)} 张图片"
             )
-        if history_lines and full_current and history_lines[-1] == full_current:
-            history_lines = history_lines[:-1]
-
-        pattern = re.compile(r"\[IMG_B64:([A-Za-z0-9+/=]+)\]")
-        history_clean = pattern.sub("[图片]", "\n".join(history_lines))
-        current_clean = pattern.sub("[图片]", current_text)
-
-        chat_log = f"""你正在群聊里和朋友们聊天。
-最近的群聊记录：
-{history_clean}
-当前消息：
-{current_clean}"""
-
-        base_prompt = (getattr(req, "prompt", None) or "").strip()
-        req.prompt = f"{base_prompt}\n{chat_log}".strip() if base_prompt else chat_log
-
+        # 只注入图片，不碰 req.prompt / req.contexts：上下文（历史、记忆、工具）
+        # 由 group_chat_plus 负责拼装，本插件再追加一份群聊流水账只会让同一段
+        # 对话在 prompt 里出现两遍。需要由本插件接管上下文的场景（例如没装
+        # group_chat_plus），把 active_reply_enabled 打开即可——那时
+        # save_in_history 会走另一条分支，用流水账自行构造 req.prompt 并判定
+        # REPLY/SKIP，主动回复能力完整保留。
         extra = [f"data:image/jpeg;base64,{b64}" for b64 in current_images]
         existing = list(getattr(req, "image_urls", None) or [])
         req.image_urls = existing + extra
-        logger.info(f"仅图片注入模式：注入 {len(current_images)} 张图片和群聊流水账")
+        logger.info(f"仅图片注入模式：注入 {len(current_images)} 张图片（流水账交由 chat_plus）")
         
     # 优先级必须低于 group_chat_plus(-1) 与 gitee_aiimg(-20)：
     # 这两个插件的 on_llm_request 会覆盖 req.prompt / req.image_urls，
