@@ -475,12 +475,30 @@ class MyPlugin(Star):
             except Exception as e:
                 logger.warning(f"仅图片注入模式解析当前消息失败: {e}")
                 current_images = []
-        if not current_images:
-            # 流水账只给图片场景使用：没有普通图片就不注入
-            return
-
         async with self.lock:
             history_lines = list(self.history.get(group_uid, []) or [])
+
+        if not current_images:
+            # 图片与 @ 分开发送时，chat_plus 的等待窗口会把两条合并进同一个事件，
+            # 触发 LLM 的那个事件自身没有图片。此时按「整个上下文历史中最近的
+            # 两张图片信息」回退，保证群友先发图、再提问时模型仍能看到图。
+            fallback_images: list[str] = []
+            for _line in reversed(history_lines):
+                for _m in re.finditer(r"\[IMG_B64:([A-Za-z0-9+/=]+)\]", _line):
+                    fallback_images.append(_m.group(1))
+                    if len(fallback_images) >= 2:
+                        break
+                if len(fallback_images) >= 2:
+                    break
+            if not fallback_images:
+                # 流水账只给图片场景使用：当前和历史都没有普通图片就不注入
+                return
+            fallback_images.reverse()  # 恢复时间顺序
+            current_images = fallback_images
+            logger.info(
+                f"仅图片注入模式：当前消息无图，回退取历史上最近 "
+                f"{len(current_images)} 张图片"
+            )
         if history_lines and full_current and history_lines[-1] == full_current:
             history_lines = history_lines[:-1]
 
