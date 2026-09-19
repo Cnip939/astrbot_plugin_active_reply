@@ -168,6 +168,15 @@ class MyPlugin(Star):
         self.pending[group_uid] = []
         self.is_waiting[group_uid] = False
 
+    @staticmethod
+    def _clean_image_payloads(text: str) -> str:
+        """移除内部 base64 标签；可读的 [图片] 占位已在原消息文本中。"""
+        return re.sub(
+            r"(?:\r?\n)?\[IMG_B64:[A-Za-z0-9+/=]+\]",
+            "",
+            text or "",
+        )
+
     async def message_and_images(self, event: AstrMessageEvent):
         texts = []
         images_b64 = []
@@ -395,8 +404,12 @@ class MyPlugin(Star):
                     conv = await self.context.conversation_manager.get_conversation(
                             event.unified_msg_origin, curr_cid
                         )
+                    # 先给其他 on_llm_request 钩子一段短的本轮文本用于检索；
+                    # 本插件的低优先级钩子随后会替换成完整群聊流水账。
+                    request_prompt = self._clean_image_payloads(current_text).strip()
+                    request_prompt = request_prompt or "[群聊消息]"
                     yield event.request_llm(
-                            prompt="placeholder",  # 会被 on_llm_request 钩子覆盖
+                            prompt=request_prompt,
                             session_id=event.session_id,
                             conversation=conv,
                         )
@@ -440,8 +453,8 @@ class MyPlugin(Star):
     
     async def _reply(self, group_uid: str, history_text: str, current_text: str) -> bool:
         try:
-            history_clean = re.sub(r"\[IMG_B64:[A-Za-z0-9+/=]+\]", "[图片]", history_text)
-            current_clean = re.sub(r"\[IMG_B64:[A-Za-z0-9+/=]+\]", "[图片]", current_text)
+            history_clean = self._clean_image_payloads(history_text)
+            current_clean = self._clean_image_payloads(current_text)
             prompt = self.PROMPT.format(history_text=history_clean, current_text=current_clean)
             logger.info(f"主动回复ai提示词\n{prompt}")
             llm_resp = await self.context.llm_generate(
@@ -527,8 +540,8 @@ class MyPlugin(Star):
             images.append(m.group(1))
         
         # 清理文本：只留 [图片] 占位
-        history_clean = pattern.sub("[图片]", history_text)
-        current_clean = pattern.sub("[图片]", current_text)
+        history_clean = self._clean_image_payloads(history_text)
+        current_clean = self._clean_image_payloads(current_text)
 
         # 群聊流水账
         chat_log = f"""你正在群聊里和朋友们聊天。
@@ -537,24 +550,22 @@ class MyPlugin(Star):
 当前消息：
 {current_clean}"""
 
-        # 低侵入：不再整体替换 req.prompt / req.contexts。
-        # 流水账只用于图片场景：有图时把群聊流水账合并进 prompt，并走 AstrBot
-        # 原生的 image_urls 多模态通道（由 assemble_context 拼成统一消息）；
-        # 无图时只清掉占位符，不额外注入流水账，保留其他插件已注入的内容。
-        base_prompt = (getattr(req, "prompt", None) or "").strip()
-        base_prompt = base_prompt.replace("placeholder", "").strip()
+        # 主动回复模式由本插件完全接管对话上下文。conversation 仍用于加载人格、
+        # Skills 和工具，但它自动带入的历史必须清空，否则会与 self.history 生成的
+        # 累计流水账重复，并在每轮保存后继续膨胀。
+        req.contexts = []
+        req.prompt = chat_log
 
         if images:
-            req.prompt = f"{base_prompt}\n{chat_log}".strip() if base_prompt else chat_log
             logger.info(f"注入 {len(images)} 张图片，使用 AstrBot 原生 image_urls 通道")
             extra = [f"data:image/jpeg;base64,{b64}" for b64 in images]
             existing = list(getattr(req, "image_urls", None) or [])
-            req.image_urls = existing + extra
-        else:
-            # 最小占位，保证 prompt 非空（self_learning 等插件依赖），不算流水账
-            req.prompt = base_prompt or "请基于当前上下文回复。"
+            req.image_urls = list(dict.fromkeys(existing + extra))
 
-        # 不再整体替换 req.contexts，保留记忆、self_learning、token_controller 等的注入
+        logger.info(
+            f"主动回复模式：已接管上下文，流水账长度={len(chat_log)}，"
+            f"图片数={len(images)}"
+        )
         
     def _compress_history_images(self, group_uid: str, max_keep: int = None):
         """

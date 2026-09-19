@@ -15,7 +15,7 @@
 
 插件等待一段时间后调用大模型判定是否回复；判定通过后会走 AstrBot 原生 pipeline 生成回复，判定不通过时停止当前消息事件，避免重复回复。
 
-该模式下上下文由本插件自己拼装：在 `on_llm_request` 里用群聊流水账构造 `req.prompt` 并注入图片，不依赖其他插件，因此单独使用也能正常主动回复。
+该模式下上下文由本插件自己拼装：在 `on_llm_request` 里清空 AstrBot conversation 自动带入的 `req.contexts`，再用唯一一份群聊流水账构造 `req.prompt`。无论本轮是否有图片，文本流水账都会进入模型；图片独立追加到 `req.image_urls`。conversation 仍用于加载人格、Skills 和工具，但不会与插件流水账重复累积。
 
 ### 仅图片注入模式（`active_reply_enabled = false`）
 
