@@ -108,7 +108,7 @@ class MyPlugin(Star):
         return False
 
     def is_emoji_image(self, event, img_comp: Image) -> bool:
-        """与 group_chat_plus 对齐：判断图片是否为平台标记的表情包"""
+        """判断图片是否为平台标记的表情包"""
         if hasattr(img_comp, "subType") and img_comp.subType is not None:
             if MyPlugin._is_emoji_sub_type(img_comp.subType):
                 return True
@@ -487,9 +487,8 @@ class MyPlugin(Star):
             history_lines = list(self.history.get(group_uid, []) or [])
 
         if not current_images:
-            # 图片与 @ 分开发送时，chat_plus 的等待窗口会把两条合并进同一个事件，
-            # 触发 LLM 的那个事件自身没有图片。此时按「整个上下文历史中最近的
-            # 两张图片信息」回退，保证群友先发图、再提问时模型仍能看到图。
+            # 图片与 @ 分开发送且触发 LLM 的事件自身没有图片时，按整个上下文
+            # 历史中最近的两张图片回退，保证先发图、再提问时模型仍能看到图。
             fallback_images: list[str] = []
             for _line in reversed(history_lines):
                 for _m in re.finditer(r"\[IMG_B64:([A-Za-z0-9+/=]+)\]", _line):
@@ -507,20 +506,16 @@ class MyPlugin(Star):
                 f"仅图片注入模式：当前消息无图，回退取历史上最近 "
                 f"{len(current_images)} 张图片"
             )
-        # 只注入图片，不碰 req.prompt / req.contexts：上下文（历史、记忆、工具）
-        # 由 group_chat_plus 负责拼装，本插件再追加一份群聊流水账只会让同一段
-        # 对话在 prompt 里出现两遍。需要由本插件接管上下文的场景（例如没装
-        # group_chat_plus），把 active_reply_enabled 打开即可——那时
-        # save_in_history 会走另一条分支，用流水账自行构造 req.prompt 并判定
-        # REPLY/SKIP，主动回复能力完整保留。
+        # 只注入图片，不碰 req.prompt / req.contexts：历史、记忆和工具由现有
+        # 上下文链路负责。需要由本插件完全接管上下文时，打开
+        # active_reply_enabled，由另一分支自行构造流水账并判定 REPLY/SKIP。
         extra = [f"data:image/jpeg;base64,{b64}" for b64 in current_images]
         existing = list(getattr(req, "image_urls", None) or [])
         req.image_urls = existing + extra
-        logger.info(f"仅图片注入模式：注入 {len(current_images)} 张图片（流水账交由 chat_plus）")
+        logger.info(f"仅图片注入模式：注入 {len(current_images)} 张图片，不修改文本上下文")
         
-    # 优先级必须低于其他插件的默认优先级 0（例如 group_chat_plus 是 -1、
-    # gitee_aiimg 是 -20）：这些插件的 on_llm_request 会覆盖 req.prompt /
-    # req.image_urls，默认优先级 0 会先执行、注入的图片随即被覆盖掉，等于白注入。
+    # 使用较低优先级，在其他上下文钩子完成后再追加图片，避免先注入的
+    # req.image_urls 被后续钩子覆盖。
     @filter.on_llm_request(priority=-30)
     async def save_in_history(self, event: AstrMessageEvent, req: ProviderRequest, *args, **kwargs):
         if not self.ACTIVE_REPLY_ENABLED:
@@ -570,7 +565,7 @@ class MyPlugin(Star):
     def _compress_history_images(self, group_uid: str, max_keep: int = None):
         """
         扫描历史记录，只保留最新的 max_keep 个 [IMG_B64:...]，
-        其余替换为 [图片]（参考插件的'降级'思路）。
+        其余替换为 [图片]，避免历史中的 base64 持续膨胀。
         从左到右扫描，越靠前的图越老。
         """
         if max_keep is None:
