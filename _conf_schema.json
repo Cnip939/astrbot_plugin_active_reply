@@ -4,6 +4,11 @@
     "type": "float",
     "default": 5.0
   },
+  "active_reply_enabled": {
+    "description": "主动回复模式开关。开启=由本插件判定 REPLY/SKIP 并完全接管本次请求的上下文；关闭=只追加普通图片，不修改已有的文本上下文、历史、记忆和工具。默认关闭，避免与其他回复判定机制重复工作",
+    "type": "bool",
+    "default": false
+  },
   "command": {
     "description": "命令屏蔽符",
     "type": "string",

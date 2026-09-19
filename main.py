@@ -35,6 +35,7 @@ class MyPlugin(Star):
         self.PROVIDER_ID = config.get("provider_id")
         self.PROMPT = config.get("prompt")
         self.PICTURE = config.get("picture_quantity")
+        self.ACTIVE_REPLY_ENABLED = config.get("active_reply_enabled", True)
 
     def _is_gif(self, img_comp: Image) -> bool:
         """检查这个图片组件是不是 GIF"""
@@ -50,6 +51,131 @@ class MyPlugin(Star):
             return True
         
         return False
+
+    @staticmethod
+    def _normalize_str(value) -> str:
+        if value is None:
+            return ""
+        try:
+            s = str(value)
+        except Exception:
+            return ""
+        s = s.strip()
+        if s.startswith("`") and s.endswith("`") and len(s) >= 2:
+            s = s[1:-1].strip()
+        return s
+
+    @staticmethod
+    def _is_emoji_sub_type(sub_type) -> bool:
+        if sub_type is None:
+            return False
+        if sub_type == 1 or sub_type == "1":
+            return True
+        try:
+            return int(sub_type) == 1
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_emoji_summary(summary) -> bool:
+        s = MyPlugin._normalize_str(summary)
+        if not s:
+            return False
+        s_lower = s.lower()
+        return "表情" in s or "emoji" in s_lower or "sticker" in s_lower
+
+    def _raw_image_segments(self, event) -> list:
+        try:
+            raw_message = getattr(event.message_obj, "raw_message", None)
+            raw_msg_list = getattr(raw_message, "message", None)
+            if isinstance(raw_msg_list, list):
+                return [
+                    seg
+                    for seg in raw_msg_list
+                    if isinstance(seg, dict) and seg.get("type") == "image"
+                ]
+        except Exception:
+            pass
+        return []
+
+    @staticmethod
+    def _segment_matches_image(data: dict, img_comp: Image) -> bool:
+        for key in ("file", "url", "path"):
+            seg_val = str(data.get(key, "") or "")
+            comp_val = str(getattr(img_comp, key, "") or "")
+            if seg_val and seg_val == comp_val:
+                return True
+        return False
+
+    def is_emoji_image(self, event, img_comp: Image) -> bool:
+        """判断图片是否为平台标记的表情包"""
+        if hasattr(img_comp, "subType") and img_comp.subType is not None:
+            if MyPlugin._is_emoji_sub_type(img_comp.subType):
+                return True
+
+        if hasattr(img_comp, "__dict__"):
+            if MyPlugin._is_emoji_sub_type(img_comp.__dict__.get("sub_type")):
+                return True
+
+        try:
+            raw_data = img_comp.toDict()
+            if isinstance(raw_data, dict) and isinstance(raw_data.get("data"), dict):
+                data = raw_data["data"]
+                sub_type = data.get("sub_type") or data.get("subType")
+                if MyPlugin._is_emoji_sub_type(sub_type):
+                    return True
+                if MyPlugin._is_emoji_summary(data.get("summary")):
+                    return True
+                img_type = data.get("type") or data.get("imageType") or data.get("image_type")
+                if img_type in ("emoji", "sticker", "face", "meme"):
+                    return True
+        except Exception:
+            pass
+
+        segments = self._raw_image_segments(event)
+        if not segments:
+            return False
+
+        image_comps = [comp for comp in event.message_obj.message if isinstance(comp, Image)]
+        for seg in segments:
+            data = seg.get("data")
+            if not isinstance(data, dict):
+                continue
+            if not MyPlugin._segment_matches_image(data, img_comp):
+                continue
+            if MyPlugin._is_emoji_sub_type(data.get("sub_type") or data.get("subType")):
+                return True
+            if MyPlugin._is_emoji_summary(data.get("summary")):
+                return True
+
+        # 一条原始段 + 一个图片组件时，直接复用原始段判据
+        if len(image_comps) == 1 and len(segments) == 1:
+            data = segments[0].get("data")
+            if not isinstance(data, dict):
+                return False
+            if MyPlugin._is_emoji_sub_type(data.get("sub_type") or data.get("subType")):
+                return True
+            if MyPlugin._is_emoji_summary(data.get("summary")):
+                return True
+        return False
+
+    def _ensure_group_state(self, group_uid: str):
+        if group_uid in self.history:
+            return
+        self.history[group_uid] = []
+        self.last_time[group_uid] = ""
+        self.last_group_name[group_uid] = ""
+        self.pending[group_uid] = []
+        self.is_waiting[group_uid] = False
+
+    @staticmethod
+    def _clean_image_payloads(text: str) -> str:
+        """移除内部 base64 标签；可读的 [图片] 占位已在原消息文本中。"""
+        return re.sub(
+            r"(?:\r?\n)?\[IMG_B64:[A-Za-z0-9+/=]+\]",
+            "",
+            text or "",
+        )
 
     async def message_and_images(self, event: AstrMessageEvent):
         texts = []
@@ -69,6 +195,10 @@ class MyPlugin(Star):
                 # 直接跳过 GIF，不下载、不转 base64、不传给 LLM
                 if self._is_gif(comp):
                     texts.append("[GIF图片]")
+                    continue
+                # 平台标记的表情包不参与注入
+                if self.is_emoji_image(event, comp):
+                    logger.info("检测到平台表情包图片，跳过注入")
                     continue
                 b64 = await self.download_image_to_b64(comp)
                 if b64:
@@ -138,8 +268,15 @@ class MyPlugin(Star):
                             logger.warning(f"图片下载返回非200: {url[:60]}... status={resp.status}")
             except Exception as e:
                 logger.warning(f"图片下载失败 {url[:60]}...: {e}")
-        # 途径3：如果以上都失败，尝试通过 AstrBot 内部方式获取（扩展点）
-        # 参考插件传了 context，这里预留
+        # 途径3：交给 AstrBot 内置 MediaResolver，统一处理本地路径、
+        # base64://、data URI 和网络 URL 等格式
+        try:
+            b64 = await img_comp.convert_to_base64()
+            if b64:
+                logger.info(f"AstrBot 内置图片解析成功: base64 len={len(b64)}")
+                return b64
+        except Exception as e:
+            logger.warning(f"AstrBot 内置图片解析失败: {e}")
         logger.warning("无法获取图片 base64，所有途径均失败")
         return None
         
@@ -150,32 +287,13 @@ class MyPlugin(Star):
     
     #收集当前消息，下文消息并合并到维护的历史中
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
-    async def process_message(self,event):
+    async def process_message(self, event: AstrMessageEvent, *args, **kwargs):
         if event.get_sender_id() == event.get_self_id():   # 过滤自己
             return
         
         group_uid = event.session_id
         text_part, img_b64_list = await self.message_and_images(event)
         substantial_text = re.sub(r'\[@.*?\]', '', text_part).strip()
-        
-        force_reply = False
-        msg_chain = event.message_obj.message
-        if msg_chain:
-            for comp in msg_chain:
-                # 情况1：消息里 @了机器人自己
-                if isinstance(comp, At):
-                    if str(comp.qq) == str(event.get_self_id()):
-                        force_reply = True
-                        logger.info("检测到被@机器人，跳过判定直接回复")
-                        break
-                
-                # 情况2：消息引用了机器人自己之前发的消息
-                elif isinstance(comp, Reply):
-                    # sender_id 是被引用消息的发送者
-                    if str(comp.sender_id) == str(event.get_self_id()):
-                        force_reply = True
-                        logger.info("检测到引用机器人消息，跳过判定直接回复")
-                        break
         
         # 基于提取后的文本判断指令
         clean_text = text_part.replace(f"[@{self.BOT_NAME}/{event.get_self_id()}]", "").strip()
@@ -195,6 +313,44 @@ class MyPlugin(Star):
         current_time = self.simple_time(event.created_at)    #解析时间戳            
         log_msg = re.sub(r"\[IMG_B64:[A-Za-z0-9+/=]+\]", "[图片]", current_message)
         logger.info(f"触发消息: {log_msg}")
+
+        event.set_extra("_ar_current_text", text_part)
+        event.set_extra("_ar_current_images", img_b64_list)
+        event.set_extra("_ar_current_full", current_message)
+
+        if not self.ACTIVE_REPLY_ENABLED:
+            # 仅图片注入模式：只维护群聊流水账，不等待、不判定、不主动回复，
+            # 也不 stop_event，后续交给平台/其他插件正常处理。
+            async with self.lock:
+                self._ensure_group_state(group_uid)
+                if self.last_time[group_uid] != current_time:
+                    self.history[group_uid].append(f"[{current_time}]")
+                    self.last_time[group_uid] = current_time
+                self.history[group_uid].append(current_message)
+                self.current_msg[group_uid] = current_message
+                if len(self.history[group_uid]) > self.MAX_HISTORY:
+                    del self.history[group_uid][:len(self.history[group_uid]) - self.MAX_HISTORY]
+                self._compress_history_images(group_uid, max_keep=self.PICTURE)
+            return
+
+        force_reply = False
+        msg_chain = event.message_obj.message
+        if msg_chain:
+            for comp in msg_chain:
+                # 情况1：消息里 @了机器人自己
+                if isinstance(comp, At):
+                    if str(comp.qq) == str(event.get_self_id()):
+                        force_reply = True
+                        logger.info("检测到被@机器人，跳过判定直接回复")
+                        break
+                
+                # 情况2：消息引用了机器人自己之前发的消息
+                elif isinstance(comp, Reply):
+                    # sender_id 是被引用消息的发送者
+                    if str(comp.sender_id) == str(event.get_self_id()):
+                        force_reply = True
+                        logger.info("检测到引用机器人消息，跳过判定直接回复")
+                        break
 
         async with self.lock:        #初始化
             if group_uid not in self.history:
@@ -248,8 +404,12 @@ class MyPlugin(Star):
                     conv = await self.context.conversation_manager.get_conversation(
                             event.unified_msg_origin, curr_cid
                         )
+                    # 先给其他 on_llm_request 钩子一段短的本轮文本用于检索；
+                    # 本插件的低优先级钩子随后会替换成完整群聊流水账。
+                    request_prompt = self._clean_image_payloads(current_text).strip()
+                    request_prompt = request_prompt or "[群聊消息]"
                     yield event.request_llm(
-                            prompt="placeholder",  # 会被 on_llm_request 钩子覆盖
+                            prompt=request_prompt,
                             session_id=event.session_id,
                             conversation=conv,
                         )
@@ -273,7 +433,7 @@ class MyPlugin(Star):
                     self._compress_history_images(group_uid, max_keep=self.PICTURE)
     
     @filter.after_message_sent()
-    async def process_bot_message(self,event):
+    async def process_bot_message(self, event: AstrMessageEvent, *args, **kwargs):
         group_uid = event.session_id 
         result = event.get_result()
         text = result.chain
@@ -293,8 +453,8 @@ class MyPlugin(Star):
     
     async def _reply(self, group_uid: str, history_text: str, current_text: str) -> bool:
         try:
-            history_clean = re.sub(r"\[IMG_B64:[A-Za-z0-9+/=]+\]", "[图片]", history_text)
-            current_clean = re.sub(r"\[IMG_B64:[A-Za-z0-9+/=]+\]", "[图片]", current_text)
+            history_clean = self._clean_image_payloads(history_text)
+            current_clean = self._clean_image_payloads(current_text)
             prompt = self.PROMPT.format(history_text=history_clean, current_text=current_clean)
             logger.info(f"主动回复ai提示词\n{prompt}")
             llm_resp = await self.context.llm_generate(
@@ -307,9 +467,61 @@ class MyPlugin(Star):
         except Exception as e:
             logger.error(f"主动回复判定失败: {e}")
             return False   
+
+    async def _inject_image_only(self, event: AstrMessageEvent, req: ProviderRequest):
+        """仅图片注入模式：只处理普通图片消息，不注入主动回复相关上下文"""
+        if event.is_private_chat():
+            return
+
+        group_uid = event.session_id
+        current_images = event.get_extra("_ar_current_images", None)
+
+        if not current_images:
+            # 兜底：钩子先于消息处理器执行时，直接从事件里重新解析
+            try:
+                _, current_images = await self.message_and_images(event)
+            except Exception as e:
+                logger.warning(f"仅图片注入模式解析当前消息失败: {e}")
+                current_images = []
+        async with self.lock:
+            history_lines = list(self.history.get(group_uid, []) or [])
+
+        if not current_images:
+            # 图片与 @ 分开发送且触发 LLM 的事件自身没有图片时，按整个上下文
+            # 历史中最近的两张图片回退，保证先发图、再提问时模型仍能看到图。
+            fallback_images: list[str] = []
+            for _line in reversed(history_lines):
+                for _m in re.finditer(r"\[IMG_B64:([A-Za-z0-9+/=]+)\]", _line):
+                    fallback_images.append(_m.group(1))
+                    if len(fallback_images) >= 2:
+                        break
+                if len(fallback_images) >= 2:
+                    break
+            if not fallback_images:
+                # 流水账只给图片场景使用：当前和历史都没有普通图片就不注入
+                return
+            fallback_images.reverse()  # 恢复时间顺序
+            current_images = fallback_images
+            logger.info(
+                f"仅图片注入模式：当前消息无图，回退取历史上最近 "
+                f"{len(current_images)} 张图片"
+            )
+        # 只注入图片，不碰 req.prompt / req.contexts：历史、记忆和工具由现有
+        # 上下文链路负责。需要由本插件完全接管上下文时，打开
+        # active_reply_enabled，由另一分支自行构造流水账并判定 REPLY/SKIP。
+        extra = [f"data:image/jpeg;base64,{b64}" for b64 in current_images]
+        existing = list(getattr(req, "image_urls", None) or [])
+        req.image_urls = existing + extra
+        logger.info(f"仅图片注入模式：注入 {len(current_images)} 张图片，不修改文本上下文")
         
-    @filter.on_llm_request()
-    async def save_in_history(self, event: AstrMessageEvent, req: ProviderRequest):
+    # 使用较低优先级，在其他上下文钩子完成后再追加图片，避免先注入的
+    # req.image_urls 被后续钩子覆盖。
+    @filter.on_llm_request(priority=-30)
+    async def save_in_history(self, event: AstrMessageEvent, req: ProviderRequest, *args, **kwargs):
+        if not self.ACTIVE_REPLY_ENABLED:
+            await self._inject_image_only(event, req)
+            return
+
         if not event.get_extra("_my_active_reply", False):
             return
         
@@ -323,8 +535,8 @@ class MyPlugin(Star):
             images.append(m.group(1))
         
         # 清理文本：只留 [图片] 占位
-        history_clean = pattern.sub("[图片]", history_text)
-        current_clean = pattern.sub("[图片]", current_text)
+        history_clean = self._clean_image_payloads(history_text)
+        current_clean = self._clean_image_payloads(current_text)
 
         # 群聊流水账
         chat_log = f"""你正在群聊里和朋友们聊天。
@@ -333,38 +545,27 @@ class MyPlugin(Star):
 当前消息：
 {current_clean}"""
 
+        # 主动回复模式由本插件完全接管对话上下文。conversation 仍用于加载人格、
+        # Skills 和工具，但它自动带入的历史必须清空，否则会与 self.history 生成的
+        # 累计流水账重复，并在每轮保存后继续膨胀。
+        req.contexts = []
+        req.prompt = chat_log
+
         if images:
-            logger.info(f"注入 {len(images)} 张图片，使用标准多模态格式")
-            
-            # 构造 OpenAI 标准多模态 content 数组
-            content = [{"type": "text", "text": chat_log}]
-            for b64 in images:
-                content.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{b64}",
-                        "detail": "auto"  # auto/low/high
-                    }
-                })
-            
-            # 只发一条 user 消息，群聊格式完全不会变
-            req.contexts = [
-                {
-                    "role": "user",
-                    "content": content
-                }
-            ]
-            # 必须清空 prompt，否则内容会重复
-            req.prompt = ""
-        else:
-            # 没图时走纯文本
-            req.contexts = []
-            req.prompt = chat_log
+            logger.info(f"注入 {len(images)} 张图片，使用 AstrBot 原生 image_urls 通道")
+            extra = [f"data:image/jpeg;base64,{b64}" for b64 in images]
+            existing = list(getattr(req, "image_urls", None) or [])
+            req.image_urls = list(dict.fromkeys(existing + extra))
+
+        logger.info(
+            f"主动回复模式：已接管上下文，流水账长度={len(chat_log)}，"
+            f"图片数={len(images)}"
+        )
         
     def _compress_history_images(self, group_uid: str, max_keep: int = None):
         """
         扫描历史记录，只保留最新的 max_keep 个 [IMG_B64:...]，
-        其余替换为 [图片]（参考插件的'降级'思路）。
+        其余替换为 [图片]，避免历史中的 base64 持续膨胀。
         从左到右扫描，越靠前的图越老。
         """
         if max_keep is None:
