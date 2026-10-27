@@ -843,6 +843,7 @@ class MyPlugin(Star):
     # 不加的话 handler 会收到多余参数抛 TypeError
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def process_message(self, event: AstrMessageEvent, *args, **kwargs):
+    async def process_message(self, event: AstrMessageEvent, *args, **kwargs):
         if event.get_sender_id() == event.get_self_id():   # 过滤自己
             return
 
@@ -1611,6 +1612,12 @@ class MyPlugin(Star):
 当前消息：
 {current_clean}"""
 
+        # 主动回复模式由本插件完全接管对话上下文。conversation 仍用于加载人格、
+        # Skills 和工具，但它自动带入的历史必须清空，否则会与 self.history 生成的
+        # 累计流水账重复，并在每轮保存后继续膨胀。
+        req.contexts = []
+        req.prompt = chat_log
+
         # 如果有判定理由，追加给回复 AI 作为参考；末尾追加恒定提示，
         # 防止模型把这段判定理由当成需要回复的群聊内容
         if reason:
@@ -1687,7 +1694,7 @@ class MyPlugin(Star):
     def _compress_history_images(self, group_uid: str, max_keep: int = None):
         """
         扫描历史记录，只保留最新的 max_keep 个 [IMG_B64:...]，
-        其余替换为 [图片]（参考插件的'降级'思路）。
+        其余替换为 [图片]，避免历史中的 base64 持续膨胀。
         从左到右扫描，越靠前的图越老。
         """
         if max_keep is None:
